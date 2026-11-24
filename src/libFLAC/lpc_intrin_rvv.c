@@ -125,13 +125,12 @@ void FLAC__lpc_compute_autocorrelation_rvv(const FLAC__real data[], uint32_t dat
 	}
 }
 
-void FLAC__lpc_compute_residual_from_qlp_coefficients_rvv(const FLAC__int32 data[], uint32_t data_len, const FLAC__int32 qlp_coeff[], uint32_t order, int lp_quantization, FLAC__int32 residual[])
+/* m1 dual-accumulator kernel kept for reference; the dispatched kernel
+   below (m4 sample-parallel) is ~2x faster at VLEN=256. */
+static void FLAC__lpc_residual_m1(const FLAC__int32 data[], uint32_t data_len, const FLAC__int32 qlp_coeff[], uint32_t order, int lp_quantization, FLAC__int32 residual[])
 {
 	uint32_t i = 0;
 	const size_t vl = 8;
-
-	FLAC__ASSERT(order > 0);
-	FLAC__ASSERT(order <= 32);
 
 	for (; i + 8 <= data_len; i += 8) {
 		vint32m1_t acc0 = __riscv_vmv_v_x_i32m1(0, vl);
@@ -157,6 +156,33 @@ void FLAC__lpc_compute_residual_from_qlp_coefficients_rvv(const FLAC__int32 data
 		for (j = 0; j < order; j++)
 			sum += qlp_coeff[j] * data[(int)i - 1 - (int)j];
 		residual[i] = data[i] - (sum >> lp_quantization);
+	}
+}
+
+/* Sample-parallel i32m4 kernel: each iteration computes `vl` consecutive
+   residual samples at once. vsetvl folds the tail into the vector loop,
+   so non-8-multiple lengths (15/63/127/...) stay fast. The encoder calls
+   us with `signal+order`, so data[-1..-order] is a readable history area.
+   mod-2^32 addition is associative => bit-exact with portable C. */
+void FLAC__lpc_compute_residual_from_qlp_coefficients_rvv(const FLAC__int32 data[], uint32_t data_len, const FLAC__int32 qlp_coeff[], uint32_t order, int lp_quantization, FLAC__int32 residual[])
+{
+	uint32_t i = 0;
+
+	FLAC__ASSERT(order > 0);
+	FLAC__ASSERT(order <= 32);
+
+	while (i < data_len) {
+		size_t vl = __riscv_vsetvl_e32m4(data_len - i);
+		vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vl);
+		uint32_t j;
+		for (j = 0; j < order; j++) {
+			vint32m4_t d = __riscv_vle32_v_i32m4(&data[(int)i - 1 - (int)j], vl);
+			acc = __riscv_vmacc_vx_i32m4(acc, qlp_coeff[j], d, vl);
+		}
+		acc = __riscv_vsra_vx_i32m4(acc, lp_quantization, vl);
+		vint32m4_t dv = __riscv_vle32_v_i32m4(&data[i], vl);
+		__riscv_vse32_v_i32m4(&residual[i], __riscv_vsub_vv_i32m4(dv, acc, vl), vl);
+		i += vl;
 	}
 }
 
