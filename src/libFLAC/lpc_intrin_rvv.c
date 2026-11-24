@@ -314,37 +314,87 @@ uint32_t FLAC__fixed_compute_best_predictor_wide_rvv(const FLAC__int32 data[], u
 	}
 }
 
-void FLAC__precompute_partition_info_sums_rvv(const FLAC__int32 residual[], FLAC__uint64 abs_residual_partition_sums[],
+/* Reference: u64 accumulator, kept for comparison (slower on X100). */
+static void FLAC__partition_sums_u64(const FLAC__int32 residual[], FLAC__uint64 abs_residual_partition_sums[],
 	uint32_t residual_samples, uint32_t predictor_order, uint32_t min_partition_order, uint32_t max_partition_order, uint32_t bps)
 {
 	(void)bps;
 	const uint32_t default_partition_samples = (residual_samples + predictor_order) >> max_partition_order;
 	uint32_t partitions = 1u << max_partition_order;
 	const size_t vl = 8;
-
+	uint32_t partition, residual_sample = 0, end = (uint32_t)(-(int)predictor_order);
+	for(partition = 0; partition < partitions; partition++) {
+		vuint64m2_t acc = __riscv_vmv_v_x_u64m2(0, vl);
+		end += default_partition_samples;
+		for( ; residual_sample + 8 <= end; residual_sample += 8) {
+			vint32m1_t r = __riscv_vle32_v_i32m1(&residual[residual_sample], vl);
+			vuint64m2_t a64 = __riscv_vzext_vf2_u64m2(__riscv_vreinterpret_v_i32m1_u32m1(VABS_I32(r)), vl);
+			acc = __riscv_vadd_vv_u64m2(acc, a64, vl);
+		}
+		FLAC__uint64 sum = 0;
+		for( ; residual_sample < end; residual_sample++) {
+			FLAC__int32 v = residual[residual_sample];
+			sum += (FLAC__uint64)(FLAC__int64)(v<0?-v:v);
+		}
+		abs_residual_partition_sums[partition] = sum + __riscv_vmv_x_s_u64m1_u64(
+			__riscv_vredsum_vs_u64m2_u64m1(acc, __riscv_vmv_v_x_u64m1(0, vl), vl));
+	}
+	/* merge partitions for lower orders */
 	{
-		/* walk identical to the portable version: the first partition
-		   absorbs the predictor_order warmup entries (zero in the encoder). */
-		uint32_t partition, residual_sample = 0, end = (uint32_t)(-(int)predictor_order);
-		for(partition = 0; partition < partitions; partition++) {
-			vuint64m2_t acc = __riscv_vmv_v_x_u64m2(0, vl);
-			end += default_partition_samples;
-			for( ; residual_sample + 8 <= end; residual_sample += 8) {
-				vint32m1_t r = __riscv_vle32_v_i32m1(&residual[residual_sample], vl);
-				vuint64m2_t a64 = __riscv_vzext_vf2_u64m2(__riscv_vreinterpret_v_i32m1_u32m1(VABS_I32(r)), vl);
-				acc = __riscv_vadd_vv_u64m2(acc, a64, vl);
+		uint32_t from_partition = 0, to_partition = partitions;
+		int partition_order;
+		for(partition_order = (int)max_partition_order - 1; partition_order >= (int)min_partition_order; partition_order--) {
+			uint32_t i;
+			partitions >>= 1;
+			for(i = 0; i < partitions; i++) {
+				abs_residual_partition_sums[to_partition++] =
+					abs_residual_partition_sums[from_partition  ] +
+					abs_residual_partition_sums[from_partition+1];
+				from_partition += 2;
 			}
-			FLAC__uint64 s = 0;
-			for( ; residual_sample < end; residual_sample++) {
-				FLAC__int32 v = residual[residual_sample];
-				s += (FLAC__uint64)(FLAC__int64)(v<0?-v:v);
-			}
-			FLAC__uint64 tot = s + __riscv_vmv_x_s_u64m1_u64(
-				__riscv_vredsum_vs_u64m2_u64m1(acc, __riscv_vmv_v_x_u64m1(0, vl), vl));
-			abs_residual_partition_sums[partition] = tot;
 		}
 	}
+}
 
+void FLAC__precompute_partition_info_sums_rvv(const FLAC__int32 residual[], FLAC__uint64 abs_residual_partition_sums[],
+	uint32_t residual_samples, uint32_t predictor_order, uint32_t min_partition_order, uint32_t max_partition_order, uint32_t bps)
+{
+	const uint32_t default_partition_samples = (residual_samples + predictor_order) >> max_partition_order;
+	uint32_t partitions = 1u << max_partition_order;
+	uint32_t threshold = 32 - FLAC__bitmath_ilog2(default_partition_samples);
+	/* FLAC__MAX_EXTRA_RESIDUAL_BPS == 4 (private/stream_encoder.h) */
+	int use32 = (bps + 4 < (int)threshold);
+
+	/* First do max_partition_order.
+	   u32m4 vector path only pays off for segments >= 16 samples: below
+	   that the vredsum setup costs more than the vector adds save. For
+	   short segments, or when the portable code would need 64-bit
+	   accumulators, fall back to scalar. */
+	uint32_t partition, residual_sample = 0, end = (uint32_t)(-(int)predictor_order);
+	if(!use32 || default_partition_samples < 16) {
+		FLAC__partition_sums_u64(residual, abs_residual_partition_sums,
+			residual_samples, predictor_order, min_partition_order, max_partition_order, bps);
+		return;
+	}
+
+	for(partition = 0; partition < partitions; partition++) {
+		end += default_partition_samples;
+		uint32_t rr = residual_sample;
+		size_t vlacc = __riscv_vsetvl_e32m4(default_partition_samples);
+		vuint32m4_t acc = __riscv_vmv_v_x_u32m4(0, vlacc);
+		while(rr < end) {
+			size_t vl = __riscv_vsetvl_e32m4(end - rr);
+			vint32m4_t r = __riscv_vle32_v_i32m4(&residual[rr], vl);
+			vint32m4_t a = __riscv_vmax_vv_i32m4(r, __riscv_vneg_v_i32m4(r, vl), vl);
+			acc = __riscv_vadd_vv_u32m4(acc, __riscv_vreinterpret_v_i32m4_u32m4(a), vl);
+			rr += vl;
+		}
+		abs_residual_partition_sums[partition] = (FLAC__uint64)__riscv_vmv_x_s_u32m1_u32(
+			__riscv_vredsum_vs_u32m4_u32m1(acc, __riscv_vmv_v_x_u32m1(0, vlacc), vlacc));
+		residual_sample = end;
+	}
+
+	/* now merge partitions for lower orders */
 	{
 		uint32_t from_partition = 0, to_partition = partitions;
 		int partition_order;
