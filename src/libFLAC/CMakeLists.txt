@@ -21,6 +21,8 @@ if(FLAC__CPU_X86_64 OR FLAC__CPU_IA32)
     if(WITH_AVX AND MSVC)
         set_source_files_properties(fixed_intrin_avx2.c lpc_intrin_avx2.c stream_encoder_intrin_avx2.c lpc_intrin_fma.c PROPERTIES COMPILE_FLAGS /arch:AVX2)
     endif()
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv")
+        set_source_files_properties(lpc_intrin_rvv.c PROPERTIES COMPILE_FLAGS "-march=rv64gcv_zvl256b")
 else()
     check_cpu_arch_arm64(FLAC__CPU_ARM64)
     if(FLAC__CPU_ARM64)
@@ -53,6 +55,7 @@ add_library(FLAC
     lpc_intrin_sse41.c
     lpc_intrin_avx2.c
     lpc_intrin_fma.c
+    lpc_intrin_rvv.c
     md5.c
     memory.c
     metadata_iterators.c

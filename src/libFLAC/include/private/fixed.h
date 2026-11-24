@@ -75,6 +75,10 @@ uint32_t FLAC__fixed_compute_best_predictor_limit_residual_intrin_avx2(const FLA
 #   endif
 #  endif
 # endif
+
+#if defined(__riscv) && (__riscv_xlen == 64) && !defined FLAC__NO_ASM
+uint32_t FLAC__fixed_compute_best_predictor_wide_rvv(const FLAC__int32 data[], uint32_t data_len, float residual_bits_per_sample[FLAC__MAX_FIXED_ORDER+1]);
+#endif
 #else
 uint32_t FLAC__fixed_compute_best_predictor(const FLAC__int32 data[], uint32_t data_len, FLAC__fixedpoint residual_bits_per_sample[FLAC__MAX_FIXED_ORDER+1]);
 uint32_t FLAC__fixed_compute_best_predictor_wide(const FLAC__int32 data[], uint32_t data_len, FLAC__fixedpoint residual_bits_per_sample[FLAC__MAX_FIXED_ORDER+1]);

@@ -975,6 +975,18 @@ static FLAC__StreamEncoderInitStatus init_stream_internal_(
     encoder->private_->local_lpc_compute_residual_from_qlp_coefficients_64bit = FLAC__lpc_compute_residual_from_qlp_coefficients_wide_intrin_neon;
 #endif /* defined FLAC__CPU_ARM64 && FLAC__HAS_NEONINTRIN */
 
+#if defined(__riscv) && (__riscv_xlen == 64) && !defined FLAC__NO_ASM
+extern void FLAC__precompute_partition_info_sums_rvv(const FLAC__int32 residual[], FLAC__uint64 abs_residual_partition_sums[], uint32_t residual_samples, uint32_t predictor_order, uint32_t min_partition_order, uint32_t max_partition_order, uint32_t bps);
+	if(getenv("FLAC_NO_RVV") == NULL) {
+		encoder->private_->local_lpc_compute_autocorrelation = FLAC__lpc_compute_autocorrelation_rvv;
+		encoder->private_->local_lpc_compute_residual_from_qlp_coefficients       = FLAC__lpc_compute_residual_from_qlp_coefficients_rvv;
+		encoder->private_->local_lpc_compute_residual_from_qlp_coefficients_16bit = FLAC__lpc_compute_residual_from_qlp_coefficients_rvv;
+		encoder->private_->local_fixed_compute_best_predictor_wide = FLAC__fixed_compute_best_predictor_wide_rvv;
+		encoder->private_->local_precompute_partition_info_sums = FLAC__precompute_partition_info_sums_rvv;
+		/* the wide residual variant is currently slower than scalar on X100: not dispatched */
+	}
+#endif
+
 	if(encoder->private_->cpuinfo.use_asm) {
 #  ifdef FLAC__CPU_IA32
 		FLAC__ASSERT(encoder->private_->cpuinfo.type == FLAC__CPUINFO_TYPE_IA32);

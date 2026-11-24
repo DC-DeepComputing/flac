@@ -94,6 +94,12 @@ void FLAC__lpc_compute_autocorrelation_intrin_neon_lag_14(const FLAC__real data[
 #endif
 #endif /* FLAC__NO_ASM */
 
+#if defined(__riscv) && (__riscv_xlen == 64) && !defined FLAC__NO_ASM
+void FLAC__lpc_compute_autocorrelation_rvv(const FLAC__real data[], uint32_t data_len, uint32_t lag, double autoc[]);
+void FLAC__lpc_compute_residual_from_qlp_coefficients_rvv(const FLAC__int32 data[], uint32_t data_len, const FLAC__int32 qlp_coeff[], uint32_t order, int lp_quantization, FLAC__int32 residual[]);
+void FLAC__lpc_compute_residual_from_qlp_coefficients_wide_rvv(const FLAC__int32 data[], uint32_t data_len, const FLAC__int32 qlp_coeff[], uint32_t order, int lp_quantization, FLAC__int32 residual[]);
+#endif
+
 /*
  *	FLAC__lpc_compute_lp_coefficients()
  *	--------------------------------------------------------------------
